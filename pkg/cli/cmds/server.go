@@ -1,9 +1,11 @@
 package cmds
 
 import (
-	"fmt"
-
 	"github.com/urfave/cli"
+)
+
+const (
+	DisableItems = "coredns, servicelb, traefik, local-storage, metrics-server"
 )
 
 type Server struct {
@@ -40,6 +42,7 @@ type Server struct {
 	DefaultLocalStoragePath  string
 	DisableCCM               bool
 	DisableNPC               bool
+	DisableKubeProxy         bool
 	ClusterInit              bool
 	ClusterReset             bool
 	EncryptSecrets           bool
@@ -115,7 +118,7 @@ func NewServerCommand(action func(*cli.Context) error) cli.Command {
 			},
 			cli.StringFlag{
 				Name:        "flannel-backend",
-				Usage:       fmt.Sprintf("(networking) One of 'none', 'vxlan', 'ipsec', 'host-gw', or 'wireguard'"),
+				Usage:       "(networking) One of 'none', 'vxlan', 'ipsec', 'host-gw', or 'wireguard'",
 				Destination: &ServerConfig.FlannelBackend,
 				Value:       "vxlan",
 			},
@@ -194,7 +197,7 @@ func NewServerCommand(action func(*cli.Context) error) cli.Command {
 			},
 			cli.StringSliceFlag{
 				Name:  "disable",
-				Usage: "(components) Do not deploy packaged components and delete any deployed components (valid items: coredns, servicelb, traefik, local-storage, metrics-server)",
+				Usage: "(components) Do not deploy packaged components and delete any deployed components (valid items: " + DisableItems + ")",
 			},
 			cli.BoolFlag{
 				Name:        "disable-scheduler",
@@ -205,6 +208,11 @@ func NewServerCommand(action func(*cli.Context) error) cli.Command {
 				Name:        "disable-cloud-controller",
 				Usage:       "(components) Disable k3s default cloud controller manager",
 				Destination: &ServerConfig.DisableCCM,
+			},
+			cli.BoolFlag{
+				Name:        "disable-kube-proxy",
+				Usage:       "(components) Disable running kube-proxy",
+				Destination: &ServerConfig.DisableKubeProxy,
 			},
 			cli.BoolFlag{
 				Name:        "disable-network-policy",
@@ -275,7 +283,7 @@ func NewServerCommand(action func(*cli.Context) error) cli.Command {
 			FlannelFlag,
 			cli.StringSliceFlag{
 				Name:  "no-deploy",
-				Usage: "(deprecated) Do not deploy packaged components (valid items: coredns, servicelb, traefik, local-storage, metrics-server)",
+				Usage: "(deprecated) Do not deploy packaged components (valid items: " + DisableItems + ")",
 			},
 			cli.StringFlag{
 				Name:        "cluster-secret",

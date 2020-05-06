@@ -9,7 +9,7 @@ replace (
 	github.com/containerd/console => github.com/containerd/console v0.0.0-20181022165439-0650fd9eeb50
 	github.com/containerd/containerd => github.com/rancher/containerd v1.3.3-k3s2
 	github.com/containerd/continuity => github.com/containerd/continuity v0.0.0-20190815185530-f2a389ac0a02
-	github.com/containerd/cri => github.com/rancher/cri v1.3.0-k3s.5
+	github.com/containerd/cri => github.com/rancher/cri v1.3.0-k3s.6
 	github.com/containerd/fifo => github.com/containerd/fifo v0.0.0-20190816180239-bda0ff6ed73c
 	github.com/containerd/go-runc => github.com/containerd/go-runc v0.0.0-20190911050354-e029b79d8cda
 	github.com/containerd/typeurl => github.com/containerd/typeurl v0.0.0-20180627222232-a93fcdb778cd
@@ -61,7 +61,6 @@ replace (
 )
 
 require (
-	github.com/Azure/go-autorest v14.0.1+incompatible // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
 	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
 	github.com/bhendo/go-powershell v0.0.0-20190719160123-219e7fb4e41e // indirect
@@ -96,12 +95,12 @@ require (
 	github.com/lxc/lxd v0.0.0-20191108214106-60ea15630455
 	github.com/mattn/go-sqlite3 v1.13.0
 	github.com/natefinch/lumberjack v2.0.0+incompatible
-	github.com/opencontainers/runc v1.0.0-rc9
+	github.com/opencontainers/runc v1.0.0-rc10
 	github.com/opencontainers/selinux v1.3.1-0.20190929122143-5215b1806f52
 	github.com/pkg/errors v0.9.1
 	github.com/rakelkar/gonetsh v0.0.0-20190719023240-501daadcadf8 // indirect
 	github.com/rancher/dynamiclistener v0.2.0
-	github.com/rancher/helm-controller v0.5.0
+	github.com/rancher/helm-controller v0.6.0
 	github.com/rancher/kine v0.4.0
 	github.com/rancher/remotedialer v0.2.0
 	github.com/rancher/wrangler v0.6.1

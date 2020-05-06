@@ -98,6 +98,7 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	serverConfig.ControlConfig.ExtraCloudControllerArgs = cfg.ExtraCloudControllerArgs
 	serverConfig.ControlConfig.DisableCCM = cfg.DisableCCM
 	serverConfig.ControlConfig.DisableNPC = cfg.DisableNPC
+	serverConfig.ControlConfig.DisableKubeProxy = cfg.DisableKubeProxy
 	serverConfig.ControlConfig.ClusterInit = cfg.ClusterInit
 	serverConfig.ControlConfig.ClusterReset = cfg.ClusterReset
 	serverConfig.ControlConfig.EncryptSecrets = cfg.EncryptSecrets
@@ -154,18 +155,25 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	serverConfig.ControlConfig.Skips = map[string]bool{}
 	for _, noDeploy := range app.StringSlice("no-deploy") {
 		for _, v := range strings.Split(noDeploy, ",") {
+			v = strings.TrimSpace(v)
 			serverConfig.ControlConfig.Skips[v] = true
 		}
 	}
 	serverConfig.ControlConfig.Disables = map[string]bool{}
 	for _, disable := range app.StringSlice("disable") {
 		for _, v := range strings.Split(disable, ",") {
+			v = strings.TrimSpace(v)
 			serverConfig.ControlConfig.Skips[v] = true
 			serverConfig.ControlConfig.Disables[v] = true
 		}
 	}
 	if serverConfig.ControlConfig.Skips["servicelb"] {
 		serverConfig.DisableServiceLB = true
+	}
+
+	if serverConfig.ControlConfig.DisableCCM {
+		serverConfig.ControlConfig.Skips["ccm"] = true
+		serverConfig.ControlConfig.Disables["ccm"] = true
 	}
 
 	logrus.Info("Starting k3s ", app.App.Version)

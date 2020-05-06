@@ -29,6 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/net"
 )
 
+const (
+	DefaultPodManifestPath = "pod-manifests"
+)
+
 func Get(ctx context.Context, agent cmds.Agent) *config.Node {
 	for {
 		agentConfig, err := get(&agent)
@@ -305,11 +309,6 @@ func get(envInfo *cmds.Agent) (*config.Node, error) {
 		return nil, err
 	}
 
-	hostLocal, err := exec.LookPath("host-local")
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to find host-local")
-	}
-
 	var flannelIface *sysnet.Interface
 	if !envInfo.NoFlannel && len(envInfo.FlannelIface) > 0 {
 		flannelIface, err = sysnet.InterfaceByName(envInfo.FlannelIface)
@@ -443,6 +442,11 @@ func get(envInfo *cmds.Agent) (*config.Node, error) {
 	}
 
 	if !nodeConfig.NoFlannel {
+		hostLocal, err := exec.LookPath("host-local")
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find host-local")
+		}
+
 		if envInfo.FlannelConf == "" {
 			nodeConfig.FlannelConf = filepath.Join(envInfo.DataDir, "etc/flannel/net-conf.json")
 		} else {
@@ -474,7 +478,9 @@ func get(envInfo *cmds.Agent) (*config.Node, error) {
 	nodeConfig.AgentConfig.PrivateRegistry = envInfo.PrivateRegistry
 	nodeConfig.AgentConfig.DisableCCM = controlConfig.DisableCCM
 	nodeConfig.AgentConfig.DisableNPC = controlConfig.DisableNPC
+	nodeConfig.AgentConfig.DisableKubeProxy = controlConfig.DisableKubeProxy
 	nodeConfig.AgentConfig.Rootless = envInfo.Rootless
+	nodeConfig.AgentConfig.PodManifests = filepath.Join(envInfo.DataDir, DefaultPodManifestPath)
 	nodeConfig.DisableSELinux = envInfo.DisableSELinux
 
 	return nodeConfig, nil

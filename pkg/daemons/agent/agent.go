@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"context"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -11,11 +10,10 @@ import (
 
 	"github.com/opencontainers/runc/libcontainer/system"
 	"github.com/rancher/k3s/pkg/daemons/config"
+	"github.com/rancher/k3s/pkg/daemons/executor"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/component-base/logs"
-	proxy "k8s.io/kubernetes/cmd/kube-proxy/app"
-	kubelet "k8s.io/kubernetes/cmd/kubelet/app"
 	"k8s.io/kubernetes/pkg/kubeapiserver/authorizer/modes"
 
 	_ "k8s.io/component-base/metrics/prometheus/restclient" // for client metric registration
@@ -28,13 +26,18 @@ func Agent(config *config.Agent) error {
 	logs.InitLogs()
 	defer logs.FlushLogs()
 
-	startKubelet(config)
-	startKubeProxy(config)
+	if err := startKubelet(config); err != nil {
+		return err
+	}
+
+	if !config.DisableKubeProxy {
+		return startKubeProxy(config)
+	}
 
 	return nil
 }
 
-func startKubeProxy(cfg *config.Agent) {
+func startKubeProxy(cfg *config.Agent) error {
 	argsMap := map[string]string{
 		"proxy-mode":           "iptables",
 		"healthz-bind-address": "127.0.0.1",
@@ -46,16 +49,11 @@ func startKubeProxy(cfg *config.Agent) {
 	}
 
 	args := config.GetArgsList(argsMap, cfg.ExtraKubeProxyArgs)
-	command := proxy.NewProxyCommand()
-	command.SetArgs(args)
-
-	go func() {
-		logrus.Infof("Running kube-proxy %s", config.ArgString(args))
-		logrus.Fatalf("kube-proxy exited: %v", command.Execute())
-	}()
+	logrus.Infof("Running kube-proxy %s", config.ArgString(args))
+	return executor.KubeProxy(args)
 }
 
-func startKubelet(cfg *config.Agent) {
+func startKubelet(cfg *config.Agent) error {
 	argsMap := map[string]string{
 		"healthz-bind-address":     "127.0.0.1",
 		"read-only-port":           "0",
@@ -69,6 +67,12 @@ func startKubelet(cfg *config.Agent) {
 		"authentication-token-webhook": "true",
 		"anonymous-auth":               "false",
 		"authorization-mode":           modes.ModeWebhook,
+	}
+	if cfg.PodManifests != "" && argsMap["pod-manifest-path"] == "" {
+		argsMap["pod-manifest-path"] = cfg.PodManifests
+	}
+	if err := os.MkdirAll(argsMap["pod-manifest-path"], 0755); err != nil {
+		logrus.Errorf("Failed to mkdir %s: %v", argsMap["pod-manifest-path"], err)
 	}
 	if cfg.RootDir != "" {
 		argsMap["root-dir"] = cfg.RootDir
@@ -152,13 +156,9 @@ func startKubelet(cfg *config.Agent) {
 	}
 
 	args := config.GetArgsList(argsMap, cfg.ExtraKubeletArgs)
-	command := kubelet.NewKubeletCommand(context.Background().Done())
-	command.SetArgs(args)
+	logrus.Infof("Running kubelet %s", config.ArgString(args))
 
-	go func() {
-		logrus.Infof("Running kubelet %s", config.ArgString(args))
-		logrus.Fatalf("kubelet exited: %v", command.Execute())
-	}()
+	return executor.Kubelet(args)
 }
 
 func addFeatureGate(current, new string) string {

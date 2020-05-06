@@ -108,7 +108,9 @@ func Run(ctx context.Context, cfg cmds.Agent) error {
 	}
 
 	cfg.DataDir = filepath.Join(cfg.DataDir, "agent")
-	os.MkdirAll(cfg.DataDir, 0700)
+	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
+		return err
+	}
 
 	lb, err := loadbalancer.Setup(ctx, cfg)
 	if err != nil {
@@ -157,10 +159,14 @@ func validate() error {
 }
 
 func configureNode(ctx context.Context, agentConfig *daemonconfig.Agent, nodes v1.NodeInterface) error {
+	count := 0
 	for {
 		node, err := nodes.Get(ctx, agentConfig.NodeName, metav1.GetOptions{})
 		if err != nil {
-			logrus.Infof("Waiting for kubelet to be ready on node %s: %v", agentConfig.NodeName, err)
+			if count%30 == 0 {
+				logrus.Infof("Waiting for kubelet to be ready on node %s: %v", agentConfig.NodeName, err)
+			}
+			count++
 			time.Sleep(1 * time.Second)
 			continue
 		}
