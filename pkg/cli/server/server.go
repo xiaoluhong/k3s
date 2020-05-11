@@ -21,6 +21,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	"k8s.io/apimachinery/pkg/util/net"
+	kubeapiserverflag "k8s.io/component-base/cli/flag"
 	"k8s.io/kubernetes/pkg/master"
 
 	_ "github.com/go-sql-driver/mysql" // ensure we have mysql
@@ -83,7 +84,10 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	serverConfig.Rootless = cfg.Rootless
 	serverConfig.ControlConfig.SANs = knownIPs(cfg.TLSSan)
 	serverConfig.ControlConfig.BindAddress = cfg.BindAddress
+	serverConfig.ControlConfig.SupervisorPort = cfg.SupervisorPort
 	serverConfig.ControlConfig.HTTPSPort = cfg.HTTPSPort
+	serverConfig.ControlConfig.APIServerPort = cfg.APIServerPort
+	serverConfig.ControlConfig.APIServerBindAddress = cfg.APIServerBindAddress
 	serverConfig.ControlConfig.ExtraAPIArgs = cfg.ExtraAPIArgs
 	serverConfig.ControlConfig.ExtraControllerArgs = cfg.ExtraControllerArgs
 	serverConfig.ControlConfig.ExtraSchedulerAPIArgs = cfg.ExtraSchedulerArgs
@@ -102,6 +106,10 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	serverConfig.ControlConfig.ClusterInit = cfg.ClusterInit
 	serverConfig.ControlConfig.ClusterReset = cfg.ClusterReset
 	serverConfig.ControlConfig.EncryptSecrets = cfg.EncryptSecrets
+
+	if serverConfig.ControlConfig.SupervisorPort == 0 {
+		serverConfig.ControlConfig.SupervisorPort = serverConfig.ControlConfig.HTTPSPort
+	}
 
 	if cmds.AgentConfig.FlannelIface != "" && cmds.AgentConfig.NodeIP == "" {
 		cmds.AgentConfig.NodeIP = netutil.GetIPFromInterface(cmds.AgentConfig.FlannelIface)
@@ -176,6 +184,20 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 		serverConfig.ControlConfig.Disables["ccm"] = true
 	}
 
+	TLSMinVersion := getArgValueFromList("tls-min-version", cfg.ExtraAPIArgs)
+	serverConfig.ControlConfig.TLSMinVersion, err = kubeapiserverflag.TLSVersion(TLSMinVersion)
+	if err != nil {
+		return errors.Wrapf(err, "Invalid TLS Version %s: %v", TLSMinVersion, err)
+	}
+
+	TLSCipherSuites := []string{getArgValueFromList("tls-cipher-suites", cfg.ExtraAPIArgs)}
+	if len(TLSCipherSuites) != 0 && TLSCipherSuites[0] != "" {
+		serverConfig.ControlConfig.TLSCipherSuites, err = kubeapiserverflag.TLSCipherSuites(TLSCipherSuites)
+		if err != nil {
+			return errors.Wrapf(err, "Invalid TLS Cipher Suites %s: %v", TLSCipherSuites, err)
+		}
+	}
+
 	logrus.Info("Starting k3s ", app.App.Version)
 	notifySocket := os.Getenv("NOTIFY_SOCKET")
 	os.Unsetenv("NOTIFY_SOCKET")
@@ -185,11 +207,14 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 		return err
 	}
 
-	logrus.Info("k3s is up and running")
-	if notifySocket != "" {
-		os.Setenv("NOTIFY_SOCKET", notifySocket)
-		systemd.SdNotify(true, "READY=1\n")
-	}
+	go func() {
+		<-serverConfig.ControlConfig.Runtime.APIServerReady
+		logrus.Info("k3s is up and running")
+		if notifySocket != "" {
+			os.Setenv("NOTIFY_SOCKET", notifySocket)
+			systemd.SdNotify(true, "READY=1\n")
+		}
+	}()
 
 	if cfg.DisableAgent {
 		<-ctx.Done()
@@ -201,7 +226,7 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 		ip = "127.0.0.1"
 	}
 
-	url := fmt.Sprintf("https://%s:%d", ip, serverConfig.ControlConfig.HTTPSPort)
+	url := fmt.Sprintf("https://%s:%d", ip, serverConfig.ControlConfig.SupervisorPort)
 	token, err := server.FormatToken(serverConfig.ControlConfig.Runtime.AgentToken, serverConfig.ControlConfig.Runtime.ServerCA)
 	if err != nil {
 		return err
@@ -229,4 +254,17 @@ func knownIPs(ips []string) []string {
 		ips = append(ips, ip.String())
 	}
 	return ips
+}
+
+func getArgValueFromList(searchArg string, argList []string) string {
+	var value string
+	for _, arg := range argList {
+		splitArg := strings.SplitN(arg, "=", 2)
+		if splitArg[0] == searchArg {
+			value = splitArg[1]
+			// break if we found our value
+			break
+		}
+	}
+	return value
 }
