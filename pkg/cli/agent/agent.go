@@ -6,21 +6,23 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/erikdubbelboer/gspt"
 	"github.com/rancher/k3s/pkg/agent"
 	"github.com/rancher/k3s/pkg/cli/cmds"
 	"github.com/rancher/k3s/pkg/datadir"
 	"github.com/rancher/k3s/pkg/netutil"
 	"github.com/rancher/k3s/pkg/token"
 	"github.com/rancher/k3s/pkg/version"
+	"github.com/rancher/spur/cli"
 	"github.com/rancher/wrangler/pkg/signals"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
 )
 
 func Run(ctx *cli.Context) error {
-	if err := cmds.InitLogging(); err != nil {
-		return err
-	}
+	// hide process arguments from ps output, since they may contain
+	// database credentials or other secrets.
+	gspt.SetProcTitle(os.Args[0] + " agent")
+
 	if os.Getuid() != 0 && runtime.GOOS != "windows" {
 		return fmt.Errorf("agent must be ran as root")
 	}
@@ -57,7 +59,7 @@ func Run(ctx *cli.Context) error {
 	}
 
 	cfg := cmds.AgentConfig
-	cfg.Debug = ctx.GlobalBool("debug")
+	cfg.Debug = ctx.Bool("debug")
 	cfg.DataDir = dataDir
 
 	contextCtx := signals.SetupSignalHandler(context.Background())

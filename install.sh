@@ -146,6 +146,19 @@ escape_dq() {
     printf '%s' "$@" | sed -e 's/"/\\"/g'
 }
 
+# --- ensures $K3S_URL is empty or begins with https://, exiting fatally otherwise ---
+verify_k3s_url() {
+    case "${K3S_URL}" in
+        "")
+            ;;
+        https://*)
+            ;;
+        *)
+            fatal "Only https:// URLs are supported for K3S_URL (have ${K3S_URL})"
+            ;;
+    esac
+}
+
 # --- define needed environment variables ---
 setup_env() {
     # --- use command args if passed or create default ---
@@ -167,6 +180,9 @@ setup_env() {
             shift
         ;;
     esac
+
+    verify_k3s_url
+
     CMD_K3S_EXEC="${CMD_K3S}$(quote_indent "$@")"
 
     # --- use systemd name if defined or create default ---
@@ -702,6 +718,7 @@ error_log=${LOG_FILE}
 
 pidfile="/var/run/${SYSTEM_NAME}.pid"
 respawn_delay=5
+respawn_max=0
 
 set -o allexport
 if [ -f /etc/environment ]; then source /etc/environment; fi

@@ -130,11 +130,12 @@ func controllerManager(cfg *config.Control, runtime *config.ControlRuntime) erro
 		"cluster-cidr":                     cfg.ClusterIPRange.String(),
 		"root-ca-file":                     runtime.ServerCA,
 		"port":                             "10252",
+		"profiling":                        "false",
 		"bind-address":                     localhostIP.String(),
 		"secure-port":                      "0",
 		"use-service-account-credentials":  "true",
-		"cluster-signing-cert-file":        runtime.ServerCA,
-		"cluster-signing-key-file":         runtime.ServerCAKey,
+		"cluster-signing-cert-file":        runtime.ClientCA,
+		"cluster-signing-key-file":         runtime.ClientCAKey,
 	}
 	if cfg.NoLeaderElect {
 		argsMap["leader-elect"] = "false"

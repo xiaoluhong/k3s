@@ -72,6 +72,7 @@ type Agent struct {
 	ExtraKubeletArgs        []string
 	ExtraKubeProxyArgs      []string
 	PauseImage              string
+	Snapshotter             string
 	CNIPlugin               bool
 	NodeTaints              []string
 	NodeLabels              []string
@@ -82,6 +83,7 @@ type Agent struct {
 	DisableNPC              bool
 	DisableKubeProxy        bool
 	Rootless                bool
+	ProtectKernelDefaults   bool
 }
 
 type Control struct {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	systemd "github.com/coreos/go-systemd/daemon"
+	"github.com/erikdubbelboer/gspt"
 	"github.com/pkg/errors"
 	"github.com/rancher/k3s/pkg/agent"
 	"github.com/rancher/k3s/pkg/cli/cmds"
@@ -18,9 +19,9 @@ import (
 	"github.com/rancher/k3s/pkg/server"
 	"github.com/rancher/k3s/pkg/token"
 	"github.com/rancher/k3s/pkg/version"
+	"github.com/rancher/spur/cli"
 	"github.com/rancher/wrangler/pkg/signals"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
 	"k8s.io/apimachinery/pkg/util/net"
 	kubeapiserverflag "k8s.io/component-base/cli/flag"
 	"k8s.io/kubernetes/pkg/master"
@@ -31,9 +32,6 @@ import (
 )
 
 func Run(app *cli.Context) error {
-	if err := cmds.InitLogging(); err != nil {
-		return err
-	}
 	return run(app, &cmds.ServerConfig)
 }
 
@@ -41,6 +39,10 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	var (
 		err error
 	)
+
+	// hide process arguments from ps output, since they may contain
+	// database credentials or other secrets.
+	gspt.SetProcTitle(os.Args[0] + " server")
 
 	if !cfg.DisableAgent && os.Getuid() != 0 && !cfg.Rootless {
 		return fmt.Errorf("must run as root unless --disable-agent is specified")
@@ -245,7 +247,7 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	}
 
 	agentConfig := cmds.AgentConfig
-	agentConfig.Debug = app.GlobalBool("bool")
+	agentConfig.Debug = app.Bool("debug")
 	agentConfig.DataDir = filepath.Dir(serverConfig.ControlConfig.DataDir)
 	agentConfig.ServerURL = url
 	agentConfig.Token = token
