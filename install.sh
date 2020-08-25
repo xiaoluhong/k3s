@@ -87,6 +87,11 @@ set -e
 #   - INSTALL_K3S_CHANNEL
 #     Channel to use for fetching k3s download URL.
 #     Defaults to 'stable'.
+#
+#   - INSTALL_K3S_ALIYUN_REGISTRY
+#     For Chinese users, set INSTALL_K3S_ALIYUN_REGISTRY=true to download the default 
+#     image using the Aliyun image repository
+#     Defaults to 'false'.
 
 GITHUB_URL=https://github.com/rancher/k3s/releases
 STORAGE_URL=https://storage.googleapis.com/k3s-ci-builds
@@ -157,6 +162,21 @@ verify_k3s_url() {
             fatal "Only https:// URLs are supported for K3S_URL (have ${K3S_URL})"
             ;;
     esac
+}
+
+# --- For Chinese users, set INSTALL_K3S_ALIYUN_REGISTRY=true to download the default 
+#     image using the Aliyun image repository
+set_aliyun_registry() {
+    if [ "${INSTALL_K3S_ALIYUN_REGISTRY}" = true ]; then
+        $SUDO mkdir -p /etc/rancher/k3s
+        $SUDO cat >> /etc/rancher/k3s/registries.yaml <<EOF
+mirrors:
+  "docker.io":
+    endpoint:
+      - "https://registry.cn-hangzhou.aliyuncs.com"
+      - "https://registry-1.docker.io"
+EOF
+    fi
 }
 
 # --- define needed environment variables ---
@@ -262,6 +282,11 @@ setup_env() {
     # --- setup channel values
     INSTALL_K3S_CHANNEL_URL=${INSTALL_K3S_CHANNEL_URL:-'https://update.k3s.io/v1-release/channels'}
     INSTALL_K3S_CHANNEL=${INSTALL_K3S_CHANNEL:-'stable'}
+
+    # --- setup aliyun registry values
+    INSTALL_K3S_ALIYUN_REGISTRY=${INSTALL_K3S_ALIYUN_REGISTRY:-'false'}
+
+    set_aliyun_registry
 }
 
 # --- check if skip download environment variable set ---
