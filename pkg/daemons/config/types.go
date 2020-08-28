@@ -20,13 +20,14 @@ const (
 	FlannelBackendHostGW    = "host-gw"
 	FlannelBackendIPSEC     = "ipsec"
 	FlannelBackendWireguard = "wireguard"
+	CertificateRenewDays    = 90
 )
 
 type Node struct {
 	Docker                   bool
 	ContainerRuntimeEndpoint string
 	NoFlannel                bool
-	DisableSELinux           bool
+	SELinux                  bool
 	FlannelBackend           string
 	FlannelConf              string
 	FlannelConfOverride      bool
@@ -46,6 +47,7 @@ type Containerd struct {
 	Config   string
 	Opt      string
 	Template string
+	SELinux  bool
 }
 
 type Agent struct {

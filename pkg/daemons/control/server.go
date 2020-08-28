@@ -131,6 +131,7 @@ func controllerManager(cfg *config.Control, runtime *config.ControlRuntime) erro
 		"root-ca-file":                     runtime.ServerCA,
 		"port":                             "10252",
 		"profiling":                        "false",
+		"address":                          localhostIP.String(),
 		"bind-address":                     localhostIP.String(),
 		"secure-port":                      "0",
 		"use-service-account-credentials":  "true",
@@ -151,6 +152,7 @@ func scheduler(cfg *config.Control, runtime *config.ControlRuntime) error {
 	argsMap := map[string]string{
 		"kubeconfig":   runtime.KubeConfigScheduler,
 		"port":         "10251",
+		"address":      "127.0.0.1",
 		"bind-address": "127.0.0.1",
 		"secure-port":  "0",
 		"profiling":    "false",
@@ -896,7 +898,7 @@ func expired(certFile string, pool *x509.CertPool) bool {
 	if err != nil {
 		return true
 	}
-	return certutil.IsCertExpired(certificates[0])
+	return certutil.IsCertExpired(certificates[0], config.CertificateRenewDays)
 }
 
 func cloudControllerManager(ctx context.Context, cfg *config.Control, runtime *config.ControlRuntime) {

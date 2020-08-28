@@ -41,7 +41,7 @@ func Rootless(stateDir string) error {
 			logrus.Fatal(err)
 		}
 		if err := child.Child(*childOpt); err != nil {
-			logrus.Fatal("child died", err)
+			logrus.Fatalf("child died: %v", err)
 		}
 	}
 
@@ -105,8 +105,13 @@ func createParentOpt(stateDir string) (*parent.Opt, error) {
 	if _, err := exec.LookPath(binary); err != nil {
 		return nil, err
 	}
-	opt.NetworkDriver = slirp4netns.NewParentDriver(binary, mtu, ipnet, disableHostLoopback, "", false, false)
-	opt.PortDriver, err = portbuiltin.NewParentDriver(&logrusDebugWriter{}, stateDir)
+	debugWriter := &logrusDebugWriter{}
+	opt.NetworkDriver, err = slirp4netns.NewParentDriver(debugWriter, binary, mtu, ipnet, disableHostLoopback, "", false, false)
+	if err != nil {
+		return nil, err
+	}
+
+	opt.PortDriver, err = portbuiltin.NewParentDriver(debugWriter, stateDir)
 	if err != nil {
 		return nil, err
 	}

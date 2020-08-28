@@ -1,6 +1,9 @@
 package cmds
 
 import (
+	"context"
+
+	"github.com/rancher/k3s/pkg/daemons/config"
 	"github.com/rancher/k3s/pkg/version"
 	"github.com/rancher/spur/cli"
 	"github.com/rancher/spur/cli/altsrc"
@@ -54,6 +57,7 @@ type Server struct {
 	ClusterInit              bool
 	ClusterReset             bool
 	EncryptSecrets           bool
+	StartupHooks             []func(context.Context, config.Control) error
 }
 
 var ServerConfig Server
@@ -63,8 +67,13 @@ func NewServerCommand(action func(*cli.Context) error) *cli.Command {
 		Name:      "server",
 		Usage:     "Run management server",
 		UsageText: appName + " server [OPTIONS]",
-		Before:    DebugContext(cli.InitAllInputSource(altsrc.NewConfigFromFlag(ConfigFlag.Name))),
-		Action:    InitLogging(action),
+		Before: func(ctx *cli.Context) error {
+			if err := CheckSELinuxFlags(ctx); err != nil {
+				return err
+			}
+			return DebugContext(cli.InitAllInputSource(altsrc.NewConfigFromFlag(ConfigFlag.Name)))(ctx)
+		},
+		Action: InitLogging(action),
 		Flags: []cli.Flag{
 			&ConfigFlag,
 			&DebugFlag,
@@ -235,7 +244,6 @@ func NewServerCommand(action func(*cli.Context) error) *cli.Command {
 			&NodeLabels,
 			&NodeTaints,
 			&DockerFlag,
-			&DisableSELinuxFlag,
 			&CRIEndpointFlag,
 			&PauseImageFlag,
 			&SnapshotterFlag,
@@ -267,21 +275,22 @@ func NewServerCommand(action func(*cli.Context) error) *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:        "server,s",
+				Hidden:      hideClusterFlags,
 				Usage:       "(experimental/cluster) Server to connect to, used to join a cluster",
 				EnvVars:     []string{version.ProgramUpper + "_URL"},
 				Destination: &ServerConfig.ServerURL,
 			},
 			&cli.BoolFlag{
 				Name:        "cluster-init",
-				Hidden:      hideDqlite,
-				Usage:       "(experimental/cluster) Initialize new cluster master",
+				Hidden:      hideClusterFlags,
+				Usage:       "(experimental/cluster) Initialize a new cluster",
 				EnvVars:     []string{version.ProgramUpper + "_CLUSTER_INIT"},
 				Destination: &ServerConfig.ClusterInit,
 			},
 			&cli.BoolFlag{
 				Name:        "cluster-reset",
-				Hidden:      hideDqlite,
-				Usage:       "(experimental/cluster) Forget all peers and become a single cluster new cluster master",
+				Hidden:      hideClusterFlags,
+				Usage:       "(experimental/cluster) Forget all peers and become sole member of a new cluster",
 				EnvVars:     []string{version.ProgramUpper + "_CLUSTER_RESET"},
 				Destination: &ServerConfig.ClusterReset,
 			},
@@ -290,9 +299,11 @@ func NewServerCommand(action func(*cli.Context) error) *cli.Command {
 				Usage:       "(experimental) Enable Secret encryption at rest",
 				Destination: &ServerConfig.EncryptSecrets,
 			},
+			&SELinuxFlag,
 
 			// Hidden/Deprecated flags below
 
+			&DisableSELinuxFlag,
 			&FlannelFlag,
 			&cli.StringSliceFlag{
 				Name:  "no-deploy",

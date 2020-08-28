@@ -60,6 +60,12 @@ func StartServer(ctx context.Context, config *Config) error {
 		return errors.Wrap(err, "starting tls server")
 	}
 
+	for _, hook := range config.StartupHooks {
+		if err := hook(ctx, config.ControlConfig); err != nil {
+			return errors.Wrap(err, "startup hook")
+		}
+	}
+
 	ip := net2.ParseIP(config.ControlConfig.BindAddress)
 	if ip == nil {
 		hostIP, err := net.ChooseHostInterface()
@@ -164,6 +170,7 @@ func masterControllers(ctx context.Context, sc *Context, config *Config) error {
 
 	helm.Register(ctx, sc.Apply,
 		sc.Helm.Helm().V1().HelmChart(),
+		sc.Helm.Helm().V1().HelmChartConfig(),
 		sc.Batch.Batch().V1().Job(),
 		sc.Auth.Rbac().V1().ClusterRoleBinding(),
 		sc.Core.Core().V1().ServiceAccount(),

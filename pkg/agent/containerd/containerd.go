@@ -69,6 +69,14 @@ func Run(ctx context.Context, cfg *config.Node) error {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Stdout = stdOut
 		cmd.Stderr = stdErr
+		cmd.Env = os.Environ()
+		// elide NOTIFY_SOCKET to prevent spurious notifications to systemd
+		for i := range cmd.Env {
+			if strings.HasPrefix(cmd.Env[i], "NOTIFY_SOCKET=") {
+				cmd.Env = append(cmd.Env[:i], cmd.Env[i+1:]...)
+				break
+			}
+		}
 		addDeathSig(cmd)
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "containerd: %s\n", err)
@@ -225,15 +233,10 @@ func setupContainerdConfig(ctx context.Context, cfg *config.Node) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to detect selinux")
 	}
-	if cfg.DisableSELinux {
-		containerdConfig.SELinuxEnabled = false
-		if selEnabled {
-			logrus.Warn("SELinux is enabled for system but has been disabled for containerd by override")
-		}
-	} else {
-		containerdConfig.SELinuxEnabled = selEnabled
-	}
-	if containerdConfig.SELinuxEnabled && !selConfigured {
+	switch {
+	case !cfg.SELinux && selEnabled:
+		logrus.Warn("SELinux is enabled on this host, but " + version.Program + " has not been started with --selinux - containerd SELinux support is disabled")
+	case cfg.SELinux && !selConfigured:
 		logrus.Warnf("SELinux is enabled for "+version.Program+" but process is not running in context '%s', "+version.Program+"-selinux policy may need to be applied", SELinuxContextType)
 	}
 
