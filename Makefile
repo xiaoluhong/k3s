@@ -2,7 +2,7 @@ TARGETS := $(shell ls scripts | grep -v \\.sh)
 
 .dapper:
 	@echo Downloading dapper
-	@curl -sL https://releases.rancher.com/dapper/v0.4.2/dapper-$$(uname -s)-$$(uname -m) > .dapper.tmp
+	@curl -sL https://releases.rancher.com/dapper/v0.5.1/dapper-$$(uname -s)-$$(uname -m) > .dapper.tmp
 	@@chmod +x .dapper.tmp
 	@./.dapper.tmp -v
 	@mv .dapper.tmp .dapper
@@ -10,13 +10,10 @@ TARGETS := $(shell ls scripts | grep -v \\.sh)
 $(TARGETS): .dapper
 	./.dapper $@
 
-trash: .dapper
-	./.dapper -m bind trash
-
-trash-keep: .dapper
-	./.dapper -m bind trash -k
-
-deps: trash
+.PHONY: deps
+deps:
+	go mod vendor
+	go mod tidy
 
 release:
 	./scripts/release.sh
@@ -24,3 +21,15 @@ release:
 .DEFAULT_GOAL := ci
 
 .PHONY: $(TARGETS)
+
+.PHONY: generate
+generate: build/data 
+	./scripts/download
+	go generate
+
+build/data:
+	mkdir -p $@
+
+.PHONY: binary-size-check
+binary-size-check:
+	scripts/binary_size_check.sh
