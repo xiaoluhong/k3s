@@ -87,6 +87,10 @@ set -e
 #   - INSTALL_K3S_CHANNEL
 #     Channel to use for fetching k3s download URL.
 #     Defaults to 'stable'.
+#
+#   - INSTALL_K3S_REGISTRIES
+#     Setup a custom Registry or Mirror
+#     Defaults to null.
 
 GITHUB_URL=https://github.com/rancher/k3s/releases
 STORAGE_URL=https://storage.googleapis.com/k3s-ci-builds
@@ -157,6 +161,24 @@ verify_k3s_url() {
             fatal "Only https:// URLs are supported for K3S_URL (have ${K3S_URL})"
             ;;
     esac
+}
+
+# --- Setup a custom Registry or Mirror
+setup_registry() {
+    REGISTRIES_FILE="/etc/rancher/k3s/registries.yaml"
+    if [ "${INSTALL_K3S_REGISTRIES}" -a ! -f "$REGISTRIES_FILE" ]; then
+        INSTALL_K3S_REGISTRIES=`echo ${INSTALL_K3S_REGISTRIES} | awk '{gsub(/,/," "); print $0}'`
+        $SUDO mkdir -p `dirname $REGISTRIES_FILE`
+        $SUDO cat >> $REGISTRIES_FILE <<EOF
+mirrors:
+  "docker.io":
+    endpoint:
+EOF
+        for registry in ${INSTALL_K3S_REGISTRIES}; do
+            reg=$reg"      - $registry\\n"
+        done
+        echo "${reg}" >> "$REGISTRIES_FILE"
+    fi
 }
 
 # --- define needed environment variables ---
@@ -802,6 +824,7 @@ eval set -- $(escape "${INSTALL_K3S_EXEC}") $(quote "$@")
     setup_env "$@"
     download_and_verify
     setup_selinux
+    setup_registry
     create_symlinks
     create_killall
     create_uninstall
