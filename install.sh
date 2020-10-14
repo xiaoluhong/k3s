@@ -175,9 +175,8 @@ mirrors:
     endpoint:
 EOF
         for registry in ${INSTALL_K3S_REGISTRIES}; do
-            reg=$reg"      - $registry\\n"
+            echo "      - $registry" >> "$REGISTRIES_FILE"
         done
-        echo "${reg}" >> "$REGISTRIES_FILE"
     fi
 }
 
