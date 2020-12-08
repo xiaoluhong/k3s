@@ -811,7 +811,7 @@ get_installed_hashes() {
 # --- enable and start systemd service ---
 systemd_enable() {
     info "systemd: Enabling ${SYSTEM_NAME} unit"
-    $SUDO systemctl enable ${FILE_K3S_SERVICE} >/dev/null
+    $SUDO systemctl enable ${FILE_K3S_SERVICE} >/dev/null 2>&1
     $SUDO systemctl daemon-reload >/dev/null
 }
 
