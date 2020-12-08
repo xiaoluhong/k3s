@@ -250,7 +250,13 @@ setup_env() {
     if [ -n "${INSTALL_K3S_BIN_DIR}" ]; then
         BIN_DIR=${INSTALL_K3S_BIN_DIR}
     else
+        # --- use /usr/local/bin if root can write to it, otherwise use /opt/bin if it exists
         BIN_DIR=/usr/local/bin
+        if ! $SUDO sh -c "touch ${BIN_DIR}/k3s-ro-test && rm -rf ${BIN_DIR}/k3s-ro-test"; then
+            if [ -d /opt/bin ]; then
+                BIN_DIR=/opt/bin
+            fi
+        fi
     fi
 
     # --- use systemd directory if defined or create default ---
@@ -464,25 +470,36 @@ setup_binary() {
 
 # --- setup selinux policy ---
 setup_selinux() {
+    case ${INSTALL_K3S_CHANNEL} in 
+        *testing)
+            rpm_channel=testing
+            ;;
+        *latest)
+            rpm_channel=latest
+            ;;
+        *)
+            rpm_channel=stable
+            ;;
+    esac
 
     rpm_site="rpm.rancher.io"
-    if [ "${INSTALL_K3S_CHANNEL}" = "testing" ]; then
-        rpm_site="rpm-${INSTALL_K3S_CHANNEL}.rancher.io"
+    if [ "${rpm_channel}" = "testing" ]; then
+        rpm_site="rpm-testing.rancher.io"
     fi
 
     policy_hint="please install:
     yum install -y container-selinux selinux-policy-base
-    yum install -y https://${rpm_site}/k3s/${INSTALL_K3S_CHANNEL}/common/centos/7/noarch/k3s-selinux-0.2-1.el7_8.noarch.rpm
+    yum install -y https://${rpm_site}/k3s/${rpm_channel}/common/centos/7/noarch/k3s-selinux-0.2-1.el7_8.noarch.rpm
 "
     policy_error=fatal
-    if [ "$INSTALL_K3S_SELINUX_WARN" = true ]; then
+    if [ "$INSTALL_K3S_SELINUX_WARN" = true ] || grep -q 'ID=flatcar' /etc/os-release; then
         policy_error=warn
     fi
 
     if [ "$INSTALL_K3S_SKIP_SELINUX_RPM" = true ] || can_skip_download; then
         info "Skipping installation of SELinux RPM"
     else
-        install_selinux_rpm ${rpm_site}
+        install_selinux_rpm ${rpm_site} ${rpm_channel}
     fi
 
     if ! $SUDO chcon -u system_u -r object_r -t container_runtime_exec_t ${BIN_DIR}/k3s >/dev/null 2>&1; then
@@ -515,10 +532,11 @@ install_selinux_rpm() {
                     ;;
             esac
         fi
-        $SUDO tee /etc/yum.repos.d/rancher-k3s-common-${INSTALL_K3S_CHANNEL}.repo >/dev/null << EOF
-[rancher-k3s-common-${INSTALL_K3S_CHANNEL}]
-name=Rancher K3s Common (${INSTALL_K3S_CHANNEL})
-baseurl=https://${1}/k3s/${INSTALL_K3S_CHANNEL}/common/centos/${maj_ver}/noarch
+        $SUDO rm -f /etc/yum.repos.d/rancher-k3s-common*.repo
+        $SUDO tee /etc/yum.repos.d/rancher-k3s-common.repo >/dev/null << EOF
+[rancher-k3s-common-${2}]
+name=Rancher K3s Common (${2})
+baseurl=https://${1}/k3s/${2}/common/centos/${maj_ver}/noarch
 enabled=1
 gpgcheck=1
 gpgkey=https://${1}/public.key
@@ -624,14 +642,17 @@ getshims() {
 
 killtree $({ set +x; } 2>/dev/null; getshims; set -x)
 
-do_unmount() {
-    awk -v path="$1" '$2 ~ ("^" path) { print $2 }' /proc/self/mounts | sort -r | xargs -r -t -n 1 umount
+do_unmount_and_remove() {
+    awk -v path="$1" '$2 ~ ("^" path) { print $2 }' /proc/self/mounts | sort -r | xargs -r -t -n 1 sh -c 'umount "$0" && rm -rf "$0"'
 }
 
-do_unmount '/run/k3s'
-do_unmount '/var/lib/rancher/k3s'
-do_unmount '/var/lib/kubelet/pods'
-do_unmount '/run/netns/cni-'
+do_unmount_and_remove '/run/k3s'
+do_unmount_and_remove '/var/lib/rancher/k3s'
+do_unmount_and_remove '/var/lib/kubelet/pods'
+do_unmount_and_remove '/run/netns/cni-'
+
+# Remove CNI namespaces
+ip netns show 2>/dev/null | grep cni- | xargs -r -t -n 1 ip netns delete
 
 # Delete network interface(s) that match 'master cni0'
 ip link show 2>/dev/null | grep 'master cni0' | while read ignore iface ignore; do
@@ -693,6 +714,11 @@ rm -rf /var/lib/rancher/k3s
 rm -rf /var/lib/kubelet
 rm -f ${BIN_DIR}/k3s
 rm -f ${KILLALL_K3S_SH}
+
+if type yum >/dev/null 2>&1; then
+    yum remove -y k3s-selinux
+    rm -f /etc/yum.repos.d/rancher-k3s-common*.repo
+fi
 EOF
     $SUDO chmod 755 ${UNINSTALL_K3S_SH}
     $SUDO chown root:root ${UNINSTALL_K3S_SH}

@@ -4,13 +4,13 @@ cd $(dirname $0)/..
 
 . ./scripts/version.sh
 
-ROOT_VERSION=v0.6.0-rc3
+ROOT_VERSION=v0.7.1
 TRAEFIK_VERSION=1.81.0
 CHARTS_DIR=build/static/charts
 
 mkdir -p ${CHARTS_DIR}
 
-curl --compressed -sfL https://github.com/rancher/k3s-root/releases/download/${ROOT_VERSION}/k3s-root-${ARCH}.tar | tar xf -
+curl --compressed -sfL https://github.com/k3s-io/k3s-root/releases/download/${ROOT_VERSION}/k3s-root-${ARCH}.tar | tar xf -
 
 TRAEFIK_FILE=traefik-${TRAEFIK_VERSION}.tgz
 curl -sfL https://kubernetes-charts.storage.googleapis.com/${TRAEFIK_FILE} -o ${CHARTS_DIR}/${TRAEFIK_FILE}
