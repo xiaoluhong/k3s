@@ -290,7 +290,11 @@ setup_env() {
     fi
 
     # --- setup channel values
-    INSTALL_K3S_CHANNEL_URL=${INSTALL_K3S_CHANNEL_URL:-'https://update.k3s.io/v1-release/channels'}
+    if [ "${INSTALL_K3S_MIRROR}" = cn ]; then
+        INSTALL_K3S_CHANNEL_URL="${INSTALL_K3S_MIRROR_URL}/k3s/channels"
+    else
+        INSTALL_K3S_CHANNEL_URL=${INSTALL_K3S_CHANNEL_URL:-'https://update.k3s.io/v1-release/channels'}
+    fi
     INSTALL_K3S_CHANNEL=${INSTALL_K3S_CHANNEL:-'stable'}
 }
 
@@ -375,10 +379,18 @@ get_release_version() {
         version_url="${INSTALL_K3S_CHANNEL_URL}/${INSTALL_K3S_CHANNEL}"
         case $DOWNLOADER in
             curl)
-                VERSION_K3S=$(curl -w '%{url_effective}' -L -s -S ${version_url} -o /dev/null | sed -e 's|.*/||')
+                if [ "${INSTALL_K3S_MIRROR}" = cn ]; then
+                    VERSION_K3S=$(curl -s -S ${version_url})
+                else
+                    VERSION_K3S=$(curl -w '%{url_effective}' -L -s -S ${version_url} -o /dev/null | sed -e 's|.*/||')
+                fi
                 ;;
             wget)
-                VERSION_K3S=$(wget -SqO /dev/null ${version_url} 2>&1 | grep -i Location | sed -e 's|.*/||')
+                if [ "${INSTALL_K3S_MIRROR}" = cn ]; then
+                    VERSION_K3S=$(wget -qO - ${version_url})
+                else
+                    VERSION_K3S=$(wget -SqO /dev/null ${version_url} 2>&1 | grep -i Location | sed -e 's|.*/||')
+                fi
                 ;;
             *)
                 fatal "Incorrect downloader executable '$DOWNLOADER'"
