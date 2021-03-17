@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	net2 "net"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,12 +18,14 @@ import (
 
 	"github.com/k3s-io/helm-controller/pkg/helm"
 	"github.com/pkg/errors"
+	"github.com/rancher/k3s/pkg/apiaddresses"
 	"github.com/rancher/k3s/pkg/clientaccess"
 	"github.com/rancher/k3s/pkg/daemons/config"
 	"github.com/rancher/k3s/pkg/daemons/control"
 	"github.com/rancher/k3s/pkg/datadir"
 	"github.com/rancher/k3s/pkg/deploy"
 	"github.com/rancher/k3s/pkg/node"
+	"github.com/rancher/k3s/pkg/nodepassword"
 	"github.com/rancher/k3s/pkg/rootlessports"
 	"github.com/rancher/k3s/pkg/servicelb"
 	"github.com/rancher/k3s/pkg/static"
@@ -36,9 +39,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/net"
 )
 
-const MasterRoleLabelKey = "node-role.kubernetes.io/master"
+const (
+	MasterRoleLabelKey       = "node-role.kubernetes.io/master"
+	ControlPlaneRoleLabelKey = "node-role.kubernetes.io/control-plane"
+	ETCDRoleLabelKey         = "node-role.kubernetes.io/etcd"
+)
 
-func resolveDataDir(dataDir string) (string, error) {
+func ResolveDataDir(dataDir string) (string, error) {
 	dataDir, err := datadir.Resolve(dataDir)
 	return filepath.Join(dataDir, "server"), err
 }
@@ -56,8 +63,12 @@ func StartServer(ctx context.Context, config *Config) error {
 		return errors.Wrap(err, "starting kubernetes")
 	}
 
-	if err := startWrangler(ctx, config); err != nil {
-		return errors.Wrap(err, "starting tls server")
+	config.ControlConfig.Runtime.Handler = router(ctx, config)
+
+	if config.ControlConfig.DisableAPIServer {
+		go setETCDLabelsAndAnnotations(ctx, config)
+	} else {
+		go startOnAPIServerReady(ctx, config)
 	}
 
 	for _, hook := range config.StartupHooks {
@@ -83,32 +94,15 @@ func StartServer(ctx context.Context, config *Config) error {
 	return writeKubeConfig(config.ControlConfig.Runtime.ServerCA, config)
 }
 
-func startWrangler(ctx context.Context, config *Config) error {
-	var (
-		err           error
-		controlConfig = &config.ControlConfig
-	)
-
-	ca, err := ioutil.ReadFile(config.ControlConfig.Runtime.ServerCA)
-	if err != nil {
-		return err
-	}
-
-	controlConfig.Runtime.Handler = router(controlConfig, controlConfig.Runtime.Tunnel, ca)
-
-	// Start in background
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-config.ControlConfig.Runtime.APIServerReady:
-			if err := runControllers(ctx, config); err != nil {
-				logrus.Fatalf("failed to start controllers: %v", err)
-			}
+func startOnAPIServerReady(ctx context.Context, config *Config) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-config.ControlConfig.Runtime.APIServerReady:
+		if err := runControllers(ctx, config); err != nil {
+			logrus.Fatalf("failed to start controllers: %v", err)
 		}
-	}()
-
-	return nil
+	}
 }
 
 func runControllers(ctx context.Context, config *Config) error {
@@ -123,10 +117,24 @@ func runControllers(ctx context.Context, config *Config) error {
 		return err
 	}
 
+	// run migration before we set controlConfig.Runtime.Core
+	if err := nodepassword.MigrateFile(
+		sc.Core.Core().V1().Secret(),
+		sc.Core.Core().V1().Node(),
+		controlConfig.Runtime.NodePasswdFile); err != nil {
+		logrus.Warn(errors.Wrapf(err, "error migrating node-password file"))
+	}
 	controlConfig.Runtime.Core = sc.Core
-	if config.ControlConfig.Runtime.ClusterControllerStart != nil {
-		if err := config.ControlConfig.Runtime.ClusterControllerStart(ctx); err != nil {
+
+	if controlConfig.Runtime.ClusterControllerStart != nil {
+		if err := controlConfig.Runtime.ClusterControllerStart(ctx); err != nil {
 			return errors.Wrapf(err, "starting cluster controllers")
+		}
+	}
+
+	for _, controller := range config.Controllers {
+		if err := controller(ctx, sc); err != nil {
+			return errors.Wrap(err, "controller")
 		}
 	}
 
@@ -135,16 +143,20 @@ func runControllers(ctx context.Context, config *Config) error {
 	}
 
 	start := func(ctx context.Context) {
-		if err := masterControllers(ctx, sc, config); err != nil {
+		if err := coreControllers(ctx, sc, config); err != nil {
 			panic(err)
+		}
+		for _, controller := range config.LeaderControllers {
+			if err := controller(ctx, sc); err != nil {
+				panic(errors.Wrap(err, "leader controller"))
+			}
 		}
 		if err := sc.Start(ctx); err != nil {
 			panic(err)
 		}
 	}
-	if !config.DisableAgent {
-		go setMasterRoleLabel(ctx, sc.Core.Core().V1().Node())
-	}
+
+	go setControlPlaneRoleLabel(ctx, sc.Core.Core().V1().Node(), config)
 
 	go setClusterDNSConfig(ctx, config, sc.Core.Core().V1().ConfigMap())
 
@@ -161,11 +173,13 @@ func runControllers(ctx context.Context, config *Config) error {
 	return nil
 }
 
-func masterControllers(ctx context.Context, sc *Context, config *Config) error {
-	if !config.ControlConfig.Skips["coredns"] {
-		if err := node.Register(ctx, sc.Core.Core().V1().ConfigMap(), sc.Core.Core().V1().Node()); err != nil {
-			return err
-		}
+func coreControllers(ctx context.Context, sc *Context, config *Config) error {
+	if err := node.Register(ctx,
+		!config.ControlConfig.Skips["coredns"],
+		sc.Core.Core().V1().Secret(),
+		sc.Core.Core().V1().ConfigMap(),
+		sc.Core.Core().V1().Node()); err != nil {
+		return err
 	}
 
 	helm.Register(ctx, sc.Apply,
@@ -188,6 +202,10 @@ func masterControllers(ctx context.Context, sc *Context, config *Config) error {
 		return err
 	}
 
+	if err := apiaddresses.Register(ctx, config.ControlConfig.Runtime, sc.Core.Core().V1().Endpoints()); err != nil {
+		return err
+	}
+
 	if config.Rootless {
 		return rootlessports.Register(ctx, sc.Core.Core().V1().Service(), !config.DisableServiceLB, config.ControlConfig.HTTPSPort)
 	}
@@ -200,7 +218,6 @@ func stageFiles(ctx context.Context, sc *Context, controlConfig *config.Control)
 	if err := static.Stage(dataDir); err != nil {
 		return err
 	}
-
 	dataDir = filepath.Join(controlConfig.DataDir, "manifests")
 	templateVars := map[string]string{
 		"%{CLUSTER_DNS}%":                controlConfig.ClusterDNS.String(),
@@ -208,11 +225,33 @@ func stageFiles(ctx context.Context, sc *Context, controlConfig *config.Control)
 		"%{DEFAULT_LOCAL_STORAGE_PATH}%": controlConfig.DefaultLocalStoragePath,
 	}
 
-	if err := deploy.Stage(dataDir, templateVars, controlConfig.Skips); err != nil {
+	skip := controlConfig.Skips
+	if !skip["traefik"] && isHelmChartTraefikV1(sc) {
+		logrus.Warn("Skipping Traefik v2 deployment due to existing Traefik v1 installation")
+		skip["traefik"] = true
+	}
+	if err := deploy.Stage(dataDir, templateVars, skip); err != nil {
 		return err
 	}
 
 	return deploy.WatchFiles(ctx, sc.Apply, sc.K3s.K3s().V1().Addon(), controlConfig.Disables, dataDir)
+}
+
+// isHelmChartTraefikV1 checks for an existing HelmChart resource with spec.chart containing traefik-1,
+// as deployed by the legacy chart (https://%{KUBERNETES_API}%/static/charts/traefik-1.81.0.tgz)
+func isHelmChartTraefikV1(sc *Context) bool {
+	prefix := "traefik-1."
+	helmChart, err := sc.Helm.Helm().V1().HelmChart().Get(metav1.NamespaceSystem, "traefik", metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Info("Failed to get existing traefik HelmChart")
+		return false
+	}
+	chart := path.Base(helmChart.Spec.Chart)
+	if strings.HasPrefix(chart, prefix) {
+		logrus.WithField("chart", chart).Info("Found existing traefik v1 HelmChart")
+		return true
+	}
+	return false
 }
 
 func HomeKubeConfig(write, rootless bool) (string, error) {
@@ -325,7 +364,7 @@ func setupDataDirAndChdir(config *config.Control) error {
 		err error
 	)
 
-	config.DataDir, err = resolveDataDir(config.DataDir)
+	config.DataDir, err = ResolveDataDir(config.DataDir)
 	if err != nil {
 		return err
 	}
@@ -423,25 +462,43 @@ func isSymlink(config string) bool {
 	return false
 }
 
-func setMasterRoleLabel(ctx context.Context, nodes v1.NodeClient) error {
+func setControlPlaneRoleLabel(ctx context.Context, nodes v1.NodeClient, config *Config) error {
+	if config.DisableAgent || config.ControlConfig.DisableAPIServer {
+		return nil
+	}
 	for {
 		nodeName := os.Getenv("NODE_NAME")
-		node, err := nodes.Get(nodeName, metav1.GetOptions{})
-		if err != nil {
-			logrus.Infof("Waiting for master node %s startup: %v", nodeName, err)
+		if nodeName == "" {
+			logrus.Info("Waiting for control-plane node agent startup")
 			time.Sleep(1 * time.Second)
 			continue
 		}
-		if v, ok := node.Labels[MasterRoleLabelKey]; ok && v == "true" {
+		node, err := nodes.Get(nodeName, metav1.GetOptions{})
+		if err != nil {
+			logrus.Infof("Waiting for control-plane node %s startup: %v", nodeName, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		// remove etcd label if etcd is disabled
+		var etcdRoleLabelExists bool
+		if config.ControlConfig.DisableETCD {
+			if _, ok := node.Labels[ETCDRoleLabelKey]; ok {
+				delete(node.Labels, ETCDRoleLabelKey)
+				etcdRoleLabelExists = true
+			}
+		}
+		if v, ok := node.Labels[ControlPlaneRoleLabelKey]; ok && v == "true" && !etcdRoleLabelExists {
 			break
 		}
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
 		}
+		node.Labels[ControlPlaneRoleLabelKey] = "true"
 		node.Labels[MasterRoleLabelKey] = "true"
+
 		_, err = nodes.Update(node)
 		if err == nil {
-			logrus.Infof("Master role label has been set successfully on node: %s", nodeName)
+			logrus.Infof("Control-plane role label has been set successfully on node: %s", nodeName)
 			break
 		}
 		select {
@@ -454,7 +511,6 @@ func setMasterRoleLabel(ctx context.Context, nodes v1.NodeClient) error {
 }
 
 func setClusterDNSConfig(ctx context.Context, controlConfig *Config, configMap v1.ConfigMapClient) error {
-	nodeName := os.Getenv("NODE_NAME")
 	// check if configmap already exists
 	_, err := configMap.Get("kube-system", "cluster-dns", metav1.GetOptions{})
 	if err == nil {
@@ -483,7 +539,7 @@ func setClusterDNSConfig(ctx context.Context, controlConfig *Config, configMap v
 			logrus.Infof("Cluster dns configmap has been set successfully")
 			break
 		}
-		logrus.Infof("Waiting for master node %s startup: %v", nodeName, err)
+		logrus.Infof("Waiting for control-plane dns startup: %v", err)
 
 		select {
 		case <-ctx.Done():

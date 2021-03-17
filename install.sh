@@ -95,7 +95,7 @@ set -e
 #     Setup a custom Registry or Mirror
 #     Defaults to null.
 
-GITHUB_URL=https://github.com/rancher/k3s/releases
+GITHUB_URL=https://github.com/k3s-io/k3s/releases
 STORAGE_URL=https://storage.googleapis.com/k3s-ci-builds
 DOWNLOADER=
 INSTALL_K3S_MIRROR_URL=${INSTALL_K3S_MIRROR_URL:-'http://rancher-mirror.cnrancher.com'}
@@ -305,7 +305,7 @@ can_skip_download() {
     fi
 }
 
-# --- verify an executabe k3s binary is installed ---
+# --- verify an executable k3s binary is installed ---
 verify_k3s_is_executable() {
     if [ ! -x ${BIN_DIR}/k3s ]; then
         fatal "Executable k3s binary not found at ${BIN_DIR}/k3s"
@@ -353,7 +353,7 @@ verify_downloader() {
     return 0
 }
 
-# --- create tempory directory and cleanup when done ---
+# --- create temporary directory and cleanup when done ---
 setup_tmp() {
     TMP_DIR=$(mktemp -d -t k3s-install.XXXXXXXXXX)
     TMP_HASH=${TMP_DIR}/k3s.hash

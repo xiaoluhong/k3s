@@ -24,7 +24,7 @@ import (
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
-	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
+	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 )
 
@@ -150,6 +150,27 @@ func cadvisorInfoToContainerCPUAndMemoryStats(name string, info *cadvisorapiv2.C
 	result.CPU = cpu
 	result.Memory = memory
 
+	return result
+}
+
+// cadvisorInfoToAcceleratorStats returns the statsapi.AcceleratorStats converted from
+// the container info from cadvisor.
+func cadvisorInfoToAcceleratorStats(info *cadvisorapiv2.ContainerInfo) []statsapi.AcceleratorStats {
+	cstat, found := latestContainerStats(info)
+	if !found || cstat.Accelerators == nil {
+		return nil
+	}
+	var result []statsapi.AcceleratorStats
+	for _, acc := range cstat.Accelerators {
+		result = append(result, statsapi.AcceleratorStats{
+			Make:        acc.Make,
+			Model:       acc.Model,
+			ID:          acc.ID,
+			MemoryTotal: acc.MemoryTotal,
+			MemoryUsed:  acc.MemoryUsed,
+			DutyCycle:   acc.DutyCycle,
+		})
+	}
 	return result
 }
 

@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/cgroups"
+	cgroupsv2 "github.com/containerd/cgroups/v2"
 	"github.com/opencontainers/runc/libcontainer/system"
 	"github.com/rancher/k3s/pkg/daemons/config"
 	"github.com/rancher/k3s/pkg/daemons/executor"
+	"github.com/rancher/k3s/pkg/version"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/component-base/logs"
@@ -20,12 +23,13 @@ import (
 	_ "k8s.io/component-base/metrics/prometheus/version"    // for version metric registration
 )
 
+const unixPrefix = "unix://"
+
 func Agent(config *config.Agent) error {
 	rand.Seed(time.Now().UTC().UnixNano())
 
 	logs.InitLogs()
 	defer logs.FlushLogs()
-
 	if err := startKubelet(config); err != nil {
 		return err
 	}
@@ -96,9 +100,13 @@ func startKubelet(cfg *config.Agent) error {
 	}
 	if cfg.RuntimeSocket != "" {
 		argsMap["container-runtime"] = "remote"
-		argsMap["container-runtime-endpoint"] = cfg.RuntimeSocket
 		argsMap["containerd"] = cfg.RuntimeSocket
 		argsMap["serialize-image-pulls"] = "false"
+		if strings.HasPrefix(argsMap["container-runtime-endpoint"], unixPrefix) {
+			argsMap["container-runtime-endpoint"] = cfg.RuntimeSocket
+		} else {
+			argsMap["container-runtime-endpoint"] = unixPrefix + cfg.RuntimeSocket
+		}
 	} else if cfg.PauseImage != "" {
 		argsMap["pod-infra-container-image"] = cfg.PauseImage
 	}
@@ -120,7 +128,7 @@ func startKubelet(cfg *config.Agent) error {
 	if err != nil || defaultIP.String() != cfg.NodeIP {
 		argsMap["node-ip"] = cfg.NodeIP
 	}
-	root, hasCFS, hasPIDs := checkCgroups()
+	kubeletRoot, runtimeRoot, hasCFS, hasPIDs := checkCgroups()
 	if !hasCFS {
 		logrus.Warn("Disabling CPU quotas due to missing cpu.cfs_period_us")
 		argsMap["cpu-cfs-quota"] = "false"
@@ -131,9 +139,11 @@ func startKubelet(cfg *config.Agent) error {
 		argsMap["enforce-node-allocatable"] = ""
 		argsMap["feature-gates"] = addFeatureGate(argsMap["feature-gates"], "SupportPodPidsLimit=false")
 	}
-	if root != "" {
-		argsMap["runtime-cgroups"] = root
-		argsMap["kubelet-cgroups"] = root
+	if kubeletRoot != "" {
+		argsMap["kubelet-cgroups"] = kubeletRoot
+	}
+	if runtimeRoot != "" {
+		argsMap["runtime-cgroups"] = runtimeRoot
 	}
 	if system.RunningInUserNS() {
 		argsMap["feature-gates"] = addFeatureGate(argsMap["feature-gates"], "DevicePlugins=false")
@@ -172,10 +182,34 @@ func addFeatureGate(current, new string) string {
 	return current + "," + new
 }
 
-func checkCgroups() (root string, hasCFS bool, hasPIDs bool) {
+func checkCgroups() (kubeletRoot, runtimeRoot string, hasCFS, hasPIDs bool) {
+	cgroupsModeV2 := cgroups.Mode() == cgroups.Unified
+
+	// For Unified (v2) cgroups we can directly check to see what controllers are mounted
+	// under the unified hierarchy.
+	if cgroupsModeV2 {
+		m, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
+		if err != nil {
+			return "", "", false, false
+		}
+		controllers, err := m.Controllers()
+		if err != nil {
+			return "", "", false, false
+		}
+		// Intentionally using an expressionless switch to match the logic below
+		for _, controller := range controllers {
+			switch {
+			case controller == "cpu":
+				hasCFS = true
+			case controller == "pids":
+				hasPIDs = true
+			}
+		}
+	}
+
 	f, err := os.Open("/proc/self/cgroup")
 	if err != nil {
-		return "", false, false
+		return "", "", false, false
 	}
 	defer f.Close()
 
@@ -185,26 +219,73 @@ func checkCgroups() (root string, hasCFS bool, hasPIDs bool) {
 		if len(parts) < 3 {
 			continue
 		}
-		systems := strings.Split(parts[1], ",")
-		for _, system := range systems {
-			if system == "pids" {
-				hasPIDs = true
-			} else if system == "cpu" {
-				p := filepath.Join("/sys/fs/cgroup", parts[1], parts[2], "cpu.cfs_period_us")
+		controllers := strings.Split(parts[1], ",")
+		// For v1 or hybrid, controller can be a single value {"blkio"}, or a comounted set {"cpu","cpuacct"}
+		// For v2, controllers = {""} (only contains a single empty string)
+		for _, controller := range controllers {
+			switch {
+			case controller == "name=systemd" || cgroupsModeV2:
+				// If we detect that we are running under a `.scope` unit with systemd
+				// we can assume we are being directly invoked from the command line
+				// and thus need to set our kubelet root to something out of the context
+				// of `/user.slice` to ensure that `CPUAccounting` and `MemoryAccounting`
+				// are enabled, as they are generally disabled by default for `user.slice`
+				// Note that we are not setting the `runtimeRoot` as if we are running with
+				// `--docker`, we will inadvertently move the cgroup `dockerd` lives in
+				//  which is not ideal and causes dockerd to become unmanageable by systemd.
+				last := parts[len(parts)-1]
+				i := strings.LastIndex(last, ".scope")
+				if i > 0 {
+					kubeletRoot = "/" + version.Program
+				}
+			case controller == "cpu":
+				// It is common for this to show up multiple times in /sys/fs/cgroup if the controllers are comounted:
+				// as "cpu" and "cpuacct", symlinked to the actual hierarchy at "cpu,cpuacct". Unfortunately the order
+				// listed in /proc/self/cgroups may not be the same order used in /sys/fs/cgroup, so this check
+				// can fail if we use the comma-separated name. Instead, we check for the controller using the symlink.
+				p := filepath.Join("/sys/fs/cgroup", controller, parts[2], "cpu.cfs_period_us")
 				if _, err := os.Stat(p); err == nil {
 					hasCFS = true
 				}
-			} else if system == "name=systemd" {
-				last := parts[len(parts)-1]
-				i := strings.LastIndex(last, ".slice")
-				if i > 0 {
-					root = "/systemd" + last[:i+len(".slice")]
-				} else {
-					root = "/systemd"
-				}
+			case controller == "pids":
+				hasPIDs = true
 			}
 		}
 	}
 
-	return root, hasCFS, hasPIDs
+	// If we're running with v1 and didn't find a scope assigned by systemd, we need to create our own root cgroup to avoid
+	// just inheriting from the parent process. The kubelet will take care of moving us into it when we start it up later.
+	if kubeletRoot == "" {
+		// Examine process ID 1 to see if there is a cgroup assigned to it.
+		// When we are not in a container, process 1 is likely to be systemd or some other service manager.
+		// It either lives at `/` or `/init.scope` according to https://man7.org/linux/man-pages/man7/systemd.special.7.html
+		// When containerized, process 1 will be generally be in a cgroup, otherwise, we may be running in
+		// a host PID scenario but we don't support this.
+		g, err := os.Open("/proc/1/cgroup")
+		if err != nil {
+			return "", "", false, false
+		}
+		defer g.Close()
+		scan = bufio.NewScanner(g)
+		for scan.Scan() {
+			parts := strings.Split(scan.Text(), ":")
+			if len(parts) < 3 {
+				continue
+			}
+			controllers := strings.Split(parts[1], ",")
+			// For v1 or hybrid, controller can be a single value {"blkio"}, or a comounted set {"cpu","cpuacct"}
+			// For v2, controllers = {""} (only contains a single empty string)
+			for _, controller := range controllers {
+				switch {
+				case controller == "name=systemd" || cgroupsModeV2:
+					last := parts[len(parts)-1]
+					if last != "/" && last != "/init.scope" {
+						kubeletRoot = "/" + version.Program
+						runtimeRoot = "/" + version.Program
+					}
+				}
+			}
+		}
+	}
+	return kubeletRoot, runtimeRoot, hasCFS, hasPIDs
 }

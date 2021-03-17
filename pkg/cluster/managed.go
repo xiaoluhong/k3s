@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -56,7 +57,15 @@ func (c *Cluster) start(ctx context.Context) error {
 		return nil
 	}
 
-	if c.config.ClusterReset {
+	switch {
+	case c.config.ClusterReset && c.config.ClusterResetRestorePath != "":
+		rebootstrap := func() error {
+			return c.storageBootstrap(ctx)
+		}
+		if err := c.managedDB.Reset(ctx, rebootstrap); err != nil {
+			return err
+		}
+	case c.config.ClusterReset:
 		if _, err := os.Stat(resetFile); err != nil {
 			if !os.IsNotExist(err) {
 				return err
@@ -64,9 +73,9 @@ func (c *Cluster) start(ctx context.Context) error {
 		} else {
 			return fmt.Errorf("cluster-reset was successfully performed, please remove the cluster-reset flag and start %s normally, if you need to perform another cluster reset, you must first manually delete the %s file", version.Program, resetFile)
 		}
-		return c.managedDB.Reset(ctx)
 	}
-	// removing the reset file and ignore error if the file doesnt exist
+
+	// removing the reset file and ignore error if the file doesn't exist
 	os.Remove(resetFile)
 
 	return c.managedDB.Start(ctx, c.clientAccessInfo)
@@ -125,4 +134,33 @@ func (c *Cluster) assignManagedDriver(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// setupEtcdProxy
+func (c *Cluster) setupEtcdProxy(ctx context.Context, etcdProxy etcd.Proxy) {
+	if c.managedDB == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			newAddresses, err := c.managedDB.GetMembersClientURLs(ctx)
+			if err != nil {
+				logrus.Warnf("failed to get etcd client URLs: %v", err)
+				continue
+			}
+			// client URLs are a full URI, but the proxy only wants host:port
+			var hosts []string
+			for _, address := range newAddresses {
+				u, err := url.Parse(address)
+				if err != nil {
+					logrus.Warnf("failed to parse etcd client URL: %v", err)
+					continue
+				}
+				hosts = append(hosts, u.Host)
+			}
+			etcdProxy.Update(hosts)
+		}
+	}()
 }

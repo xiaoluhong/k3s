@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -105,7 +106,7 @@ func TestFailOver(t *testing.T) {
 		DataDir:   tmpDir,
 	}
 
-	lb, err := New(cfg.DataDir, SupervisorServiceName, cfg.ServerURL)
+	lb, err := New(context.TODO(), cfg.DataDir, SupervisorServiceName, cfg.ServerURL, RandomPort)
 	if err != nil {
 		assertEqual(t, err, nil)
 	}
@@ -152,11 +153,11 @@ func TestFailFast(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	cfg := cmds.Agent{
-		ServerURL: "http://127.0.0.1:-1/",
+		ServerURL: "http://127.0.0.1:0/",
 		DataDir:   tmpDir,
 	}
 
-	lb, err := New(cfg.DataDir, SupervisorServiceName, cfg.ServerURL)
+	lb, err := New(context.TODO(), cfg.DataDir, SupervisorServiceName, cfg.ServerURL, RandomPort)
 	if err != nil {
 		assertEqual(t, err, nil)
 	}

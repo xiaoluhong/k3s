@@ -26,7 +26,7 @@ import (
 	"github.com/rancher/k3s/pkg/cli/cmds"
 	"github.com/rancher/k3s/pkg/clientaccess"
 	"github.com/rancher/k3s/pkg/daemons/config"
-	"github.com/rancher/k3s/pkg/daemons/control"
+	"github.com/rancher/k3s/pkg/daemons/control/deps"
 	"github.com/rancher/k3s/pkg/version"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/json"
@@ -39,7 +39,7 @@ const (
 
 func Get(ctx context.Context, agent cmds.Agent, proxy proxy.Proxy) *config.Node {
 	for {
-		agentConfig, err := get(&agent, proxy)
+		agentConfig, err := get(ctx, &agent, proxy)
 		if err != nil {
 			logrus.Errorf("Failed to retrieve agent config: %v", err)
 			select {
@@ -169,7 +169,7 @@ func getServingCert(nodeName, nodeIP, servingCertFile, servingKeyFile, nodePassw
 
 func getHostFile(filename, keyFile string, info *clientaccess.Info) error {
 	basename := filepath.Base(filename)
-	fileBytes, err := clientaccess.Get("/v1-"+version.Program+"/"+basename, info)
+	fileBytes, err := info.Get("/v1-" + version.Program + "/" + basename)
 	if err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func locateOrGenerateResolvConf(envInfo *cmds.Agent) string {
 	return tmpConf
 }
 
-func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
+func get(ctx context.Context, envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	if envInfo.Debug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
@@ -308,8 +308,9 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 		return nil, err
 	}
 
+	// If the supervisor and externally-facing apiserver are not on the same port, tell the proxy where to find the apiserver.
 	if controlConfig.SupervisorPort != controlConfig.HTTPSPort {
-		if err := proxy.StartAPIServerProxy(controlConfig.HTTPSPort); err != nil {
+		if err := proxy.SetAPIServerPort(ctx, controlConfig.HTTPSPort); err != nil {
 			return nil, errors.Wrapf(err, "failed to setup access to API Server port %d on at %s", controlConfig.HTTPSPort, proxy.SupervisorURL())
 		}
 	}
@@ -361,6 +362,8 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 		nodeName += "-" + nodeID
 	}
 
+	os.Setenv("NODE_NAME", nodeName)
+
 	servingCert, err := getServingCert(nodeName, nodeIP, servingKubeletCert, servingKubeletKey, newNodePasswordFile, info)
 	if err != nil {
 		return nil, err
@@ -373,7 +376,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	}
 
 	kubeconfigKubelet := filepath.Join(envInfo.DataDir, "agent", "kubelet.kubeconfig")
-	if err := control.KubeConfig(kubeconfigKubelet, proxy.APIServerURL(), serverCAFile, clientKubeletCert, clientKubeletKey); err != nil {
+	if err := deps.KubeConfig(kubeconfigKubelet, proxy.APIServerURL(), serverCAFile, clientKubeletCert, clientKubeletKey); err != nil {
 		return nil, err
 	}
 
@@ -384,7 +387,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	}
 
 	kubeconfigKubeproxy := filepath.Join(envInfo.DataDir, "agent", "kubeproxy.kubeconfig")
-	if err := control.KubeConfig(kubeconfigKubeproxy, proxy.APIServerURL(), serverCAFile, clientKubeProxyCert, clientKubeProxyKey); err != nil {
+	if err := deps.KubeConfig(kubeconfigKubeproxy, proxy.APIServerURL(), serverCAFile, clientKubeProxyCert, clientKubeProxyKey); err != nil {
 		return nil, err
 	}
 
@@ -395,7 +398,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	}
 
 	kubeconfigK3sController := filepath.Join(envInfo.DataDir, "agent", version.Program+"controller.kubeconfig")
-	if err := control.KubeConfig(kubeconfigK3sController, proxy.APIServerURL(), serverCAFile, clientK3sControllerCert, clientK3sControllerKey); err != nil {
+	if err := deps.KubeConfig(kubeconfigK3sController, proxy.APIServerURL(), serverCAFile, clientK3sControllerCert, clientK3sControllerKey); err != nil {
 		return nil, err
 	}
 
@@ -404,6 +407,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 		SELinux:                  envInfo.EnableSELinux,
 		ContainerRuntimeEndpoint: envInfo.ContainerRuntimeEndpoint,
 		FlannelBackend:           controlConfig.FlannelBackend,
+		ServerHTTPSPort:          controlConfig.HTTPSPort,
 	}
 	nodeConfig.FlannelIface = flannelIface
 	nodeConfig.Images = filepath.Join(envInfo.DataDir, "agent", "images")
@@ -431,16 +435,18 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	nodeConfig.CACerts = info.CACerts
 	nodeConfig.Containerd.Config = filepath.Join(envInfo.DataDir, "agent", "etc", "containerd", "config.toml")
 	nodeConfig.Containerd.Root = filepath.Join(envInfo.DataDir, "agent", "containerd")
-	switch nodeConfig.AgentConfig.Snapshotter {
-	case "overlayfs":
-		if err := overlay.Supported(nodeConfig.Containerd.Root); err != nil {
-			return nil, errors.Wrapf(err, "\"overlayfs\" snapshotter cannot be enabled for %q, try using \"fuse-overlayfs\" or \"native\"",
-				nodeConfig.Containerd.Root)
-		}
-	case "fuse-overlayfs":
-		if err := fuseoverlayfs.Supported(nodeConfig.Containerd.Root); err != nil {
-			return nil, errors.Wrapf(err, "\"fuse-overlayfs\" snapshotter cannot be enabled for %q, try using \"native\"",
-				nodeConfig.Containerd.Root)
+	if !nodeConfig.Docker && nodeConfig.ContainerRuntimeEndpoint == "" {
+		switch nodeConfig.AgentConfig.Snapshotter {
+		case "overlayfs":
+			if err := overlay.Supported(nodeConfig.Containerd.Root); err != nil {
+				return nil, errors.Wrapf(err, "\"overlayfs\" snapshotter cannot be enabled for %q, try using \"fuse-overlayfs\" or \"native\"",
+					nodeConfig.Containerd.Root)
+			}
+		case "fuse-overlayfs":
+			if err := fuseoverlayfs.Supported(nodeConfig.Containerd.Root); err != nil {
+				return nil, errors.Wrapf(err, "\"fuse-overlayfs\" snapshotter cannot be enabled for %q, try using \"native\"",
+					nodeConfig.Containerd.Root)
+			}
 		}
 	}
 	nodeConfig.Containerd.Opt = filepath.Join(envInfo.DataDir, "agent", "containerd")
@@ -475,7 +481,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	}
 
 	if !nodeConfig.Docker && nodeConfig.ContainerRuntimeEndpoint == "" {
-		nodeConfig.AgentConfig.RuntimeSocket = "unix://" + nodeConfig.Containerd.Address
+		nodeConfig.AgentConfig.RuntimeSocket = nodeConfig.Containerd.Address
 	} else {
 		nodeConfig.AgentConfig.RuntimeSocket = nodeConfig.ContainerRuntimeEndpoint
 		nodeConfig.AgentConfig.CNIPlugin = true
@@ -485,7 +491,20 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 		nodeConfig.AgentConfig.ClusterCIDR = *controlConfig.ClusterIPRange
 	}
 
-	os.Setenv("NODE_NAME", nodeConfig.AgentConfig.NodeName)
+	if controlConfig.ServiceIPRange != nil {
+		nodeConfig.AgentConfig.ServiceCIDR = *controlConfig.ServiceIPRange
+	}
+
+	if controlConfig.ServiceNodePortRange != nil {
+		nodeConfig.AgentConfig.ServiceNodePortRange = *controlConfig.ServiceNodePortRange
+	}
+
+	// Old versions of the server do not send enough information to correctly start the NPC. Users
+	// need to upgrade the server to at least the same version as the agent, or disable the NPC
+	// cluster-wide.
+	if controlConfig.DisableNPC == false && (controlConfig.ServiceIPRange == nil || controlConfig.ServiceNodePortRange == nil) {
+		return nil, fmt.Errorf("incompatible down-level server detected; servers must be upgraded to at least %s, or restarted with --disable-network-policy", version.Version)
+	}
 
 	nodeConfig.AgentConfig.ExtraKubeletArgs = envInfo.ExtraKubeletArgs
 	nodeConfig.AgentConfig.ExtraKubeProxyArgs = envInfo.ExtraKubeProxyArgs
@@ -493,6 +512,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 	nodeConfig.AgentConfig.NodeTaints = envInfo.Taints
 	nodeConfig.AgentConfig.NodeLabels = envInfo.Labels
 	nodeConfig.AgentConfig.PrivateRegistry = envInfo.PrivateRegistry
+	nodeConfig.AgentConfig.AirgapExtraRegistry = envInfo.AirgapExtraRegistry
 	nodeConfig.AgentConfig.DisableCCM = controlConfig.DisableCCM
 	nodeConfig.AgentConfig.DisableNPC = controlConfig.DisableNPC
 	nodeConfig.AgentConfig.DisableKubeProxy = controlConfig.DisableKubeProxy
@@ -504,7 +524,7 @@ func get(envInfo *cmds.Agent, proxy proxy.Proxy) (*config.Node, error) {
 }
 
 func getConfig(info *clientaccess.Info) (*config.Control, error) {
-	data, err := clientaccess.Get("/v1-"+version.Program+"/config", info)
+	data, err := info.Get("/v1-" + version.Program + "/config")
 	if err != nil {
 		return nil, err
 	}

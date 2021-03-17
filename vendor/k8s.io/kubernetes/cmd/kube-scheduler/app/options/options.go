@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -152,12 +151,10 @@ func newDefaultComponentConfig() (*kubeschedulerconfig.KubeSchedulerConfiguratio
 func (o *Options) Flags() (nfs cliflag.NamedFlagSets) {
 	fs := nfs.FlagSet("misc")
 	fs.StringVar(&o.ConfigFile, "config", o.ConfigFile, `The path to the configuration file. The following flags can overwrite fields in this file:
-  --address
-  --port
-  --use-legacy-policy-config
-  --policy-configmap
+  --algorithm-provider
   --policy-config-file
-  --algorithm-provider`)
+  --policy-configmap
+  --policy-configmap-namespace`)
 	fs.StringVar(&o.WriteConfigTo, "write-config-to", o.WriteConfigTo, "If set, write the configuration values to this file and exit.")
 	fs.StringVar(&o.Master, "master", o.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 
@@ -287,8 +284,7 @@ func (o *Options) Config() (*schedulerappconfig.Config, error) {
 	}
 
 	c.Client = client
-	c.InformerFactory = informers.NewSharedInformerFactory(client, 0)
-	c.PodInformer = scheduler.NewPodInformer(client, 0)
+	c.InformerFactory = scheduler.NewInformerFactory(client, 0)
 	c.LeaderElection = leaderElectionConfig
 
 	return c, nil
@@ -347,7 +343,6 @@ func createClients(config componentbaseconfig.ClientConnectionConfiguration, mas
 	kubeConfig.AcceptContentTypes = config.AcceptContentTypes
 	kubeConfig.ContentType = config.ContentType
 	kubeConfig.QPS = config.QPS
-	//TODO make config struct use int instead of int32?
 	kubeConfig.Burst = int(config.Burst)
 
 	client, err := clientset.NewForConfig(restclient.AddUserAgent(kubeConfig, "scheduler"))
